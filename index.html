@@ -1,0 +1,563 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged,
+  signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut
+} from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, updateDoc, doc } from 'firebase/firestore';
+import { 
+  Search, FileText, CheckCircle, Clock, AlertCircle, 
+  X, Save, ArrowLeft, User, PieChart, Filter, Lock, Mail, 
+  LogOut, Database, ShieldAlert, ShieldCheck
+} from 'lucide-react';
+
+// --- CONFIGURACIÓN DE GOOGLE SHEETS ---
+const GOOGLE_SHEETS_APP_URL = ""; 
+
+// --- Inicialización de Firebase ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'aforecoppel-quejas-app';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [sessionActive, setSessionActive] = useState(false); // Controla el acceso a la vista privada
+  const [quejas, setQuejas] = useState([]);
+  const [view, setView] = useState('analitica'); // Inicia en la Vista Previa
+  const [selectedQueja, setSelectedQueja] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [toast, setToast] = useState(null);
+  
+  // Estado de Autenticación
+  const [authMode, setAuthMode] = useState('login'); 
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  // Filtros
+  const [filterEstatus, setFilterEstatus] = useState('');
+  const [filterTipificacion, setFilterTipificacion] = useState('');
+  const [filterTienda, setFilterTienda] = useState('');
+  const [filterEstado, setFilterEstado] = useState('');
+
+  // --- Autenticación Estricta ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+          setSessionActive(true); 
+        } else {
+          await signInAnonymously(auth); 
+        }
+      } catch (error) {
+        console.error("Error de autenticación:", error);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser && !currentUser.isAnonymous) {
+        setSessionActive(true);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- Carga de Datos (Firebase Firestore) ---
+  useEffect(() => {
+    if (!user) return; 
+
+    const quejasRef = collection(db, 'artifacts', appId, 'public', 'data', 'quejas');
+    const unsubscribe = onSnapshot(quejasRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      data.sort((a, b) => b.fechaRegistro - a.fechaRegistro);
+      setQuejas(data);
+    }, (error) => {
+      console.error("Error cargando quejas:", error);
+      mostrarToast("Error de permisos al cargar la base de datos.", "error");
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- Funciones Auxiliares ---
+  const mostrarToast = (mensaje, tipo = 'success') => {
+    setToast({ mensaje, tipo });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  // --- INTEGRACIÓN CON GOOGLE SHEETS ---
+  const enviarActualizacionASheets = async (operacion, folio, datos) => {
+    if (!GOOGLE_SHEETS_APP_URL) return; 
+    try {
+      await fetch(GOOGLE_SHEETS_APP_URL, {
+        method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operacion: operacion, folio: folio, datos: datos })
+      });
+    } catch (error) { console.error("Error al sincronizar con Google Sheets.", error); }
+  };
+
+  // --- Funciones de Acceso y Permisos (Auth) ---
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      setSessionActive(true);
+      mostrarToast("Inicio de sesión exitoso.");
+      setView('dashboard');
+    } catch (error) {
+      mostrarToast("Credenciales incorrectas o usuario no encontrado.", "error");
+    }
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    try {
+      await createUserWithEmailAndPassword(auth, email, password);
+      setSessionActive(true);
+      mostrarToast("Usuario registrado exitosamente.");
+      setView('dashboard');
+    } catch (error) {
+      mostrarToast("Error al registrar. Intente con otra contraseña.", "error");
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    setSessionActive(false);
+    setView('analitica');
+    mostrarToast("Sesión cerrada correctamente.");
+    await signInAnonymously(auth); 
+  };
+
+  const handleGuestLogin = async () => {
+    setSessionActive(true);
+    setView('dashboard');
+    mostrarToast("Has ingresado en modo de demostración.");
+  };
+
+  // --- VISTAS INTERNAS ---
+
+  // 1. PANTALLA DE LOGIN
+  const renderLogin = () => (
+    <div className="flex flex-col items-center justify-center py-12 animate-in fade-in duration-500">
+      <div className="bg-white p-10 rounded-3xl shadow-lg w-full max-w-md border border-gray-100">
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center text-[#002856] mx-auto mb-4">
+            <ShieldAlert size={32} />
+          </div>
+          <h2 className="font-bold text-2xl text-gray-800 tracking-tight">Acceso Restringido</h2>
+          <p className="text-gray-500 text-sm mt-2">Ingrese sus credenciales para acceder a la base de datos confidencial de clientes.</p>
+        </div>
+
+        <form onSubmit={authMode === 'login' ? handleLogin : handleRegister} className="space-y-5">
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">Correo Institucional</label>
+            <div className="relative">
+              <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+              <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full pl-10 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-[#002856] focus:bg-white outline-none transition-all" placeholder="usuario@aforecoppel.com" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">Contraseña</label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+              <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full pl-10 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-[#002856] focus:bg-white outline-none transition-all" placeholder="••••••••" />
+            </div>
+          </div>
+          <button type="submit" className="w-full bg-[#002856] hover:bg-[#001f44] text-white font-bold py-3 rounded-xl transition-all shadow-md hover:shadow-lg mt-6">
+            {authMode === 'login' ? 'Ingresar al Sistema' : 'Registrar Nuevo Acceso'}
+          </button>
+        </form>
+
+        <div className="mt-8 text-center space-y-4">
+          <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-sm text-[#002856] hover:underline font-medium block w-full transition-colors">
+            {authMode === 'login' ? '¿No tienes cuenta? Solicitar registro' : 'Ya tengo cuenta, ingresar'}
+          </button>
+          <div className="border-t border-gray-100 pt-6">
+            <button onClick={handleGuestLogin} className="w-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold py-3 rounded-xl transition-all border border-gray-200 flex items-center justify-center gap-2">
+              <User size={18} /> Entrar como Invitado (Demo)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // 2. VISTA PREVIA (Dashboard Analítico Minimalista)
+  const renderAnalitica = () => {
+    const total = quejas.length;
+    const pendientes = quejas.filter(q => q.estatus === 'Pendiente').length;
+    const enRevision = quejas.filter(q => q.estatus === 'En Revisión').length;
+    const resueltas = quejas.filter(q => q.estatus === 'Resuelta').length;
+
+    const motivosCount = quejas.reduce((acc, q) => {
+      if(q.tipificacion) acc[q.tipificacion] = (acc[q.tipificacion] || 0) + 1;
+      return acc;
+    }, {});
+    const motivosArray = Object.entries(motivosCount).sort((a, b) => b[1] - a[1]);
+    const porcentaje = (valor, total) => total === 0 ? 0 : Math.round((valor / total) * 100);
+
+    return (
+      <div className="animate-in fade-in duration-700 space-y-8 max-w-5xl mx-auto py-4">
+        <div className="text-center space-y-2 mb-10">
+          <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight">Resumen de Operaciones</h2>
+          <p className="text-gray-500 font-medium">Métricas generales del área de atención a clientes y seguimiento de quejas.</p>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center transition-transform hover:scale-105">
+            <div className="text-gray-400 mb-2 uppercase text-xs font-bold tracking-wider">Total Acumulado</div>
+            <div className="text-5xl font-black text-[#002856]">{total}</div>
+          </div>
+          
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center transition-transform hover:scale-105">
+            <div className="text-red-400 mb-2 uppercase text-xs font-bold tracking-wider">Pendientes</div>
+            <div className="text-4xl font-black text-red-600">{pendientes}</div>
+          </div>
+          
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center transition-transform hover:scale-105">
+            <div className="text-yellow-500 mb-2 uppercase text-xs font-bold tracking-wider">En Revisión</div>
+            <div className="text-4xl font-black text-yellow-600">{enRevision}</div>
+          </div>
+          
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center justify-center text-center transition-transform hover:scale-105">
+            <div className="text-green-500 mb-2 uppercase text-xs font-bold tracking-wider">Resueltas</div>
+            <div className="text-4xl font-black text-green-600">{resueltas}</div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 mt-8">
+          <h3 className="text-xl font-bold text-gray-800 mb-8 flex items-center justify-center gap-2">
+            Distribución por Tipificación
+          </h3>
+          <div className="space-y-6 max-w-2xl mx-auto">
+            {motivosArray.length === 0 ? (
+               <div className="text-center text-gray-400 py-10">Sin datos registrados aún</div>
+            ) : (
+              motivosArray.map(([motivo, count]) => (
+                <div key={motivo} className="group">
+                  <div className="flex justify-between text-sm mb-2">
+                    <span className="font-semibold text-gray-700 group-hover:text-[#002856] transition-colors">{motivo}</span>
+                    <span className="text-gray-400 font-bold">{count} <span className="text-xs font-medium ml-1">({porcentaje(count, total)}%)</span></span>
+                  </div>
+                  <div className="w-full bg-gray-50 rounded-full h-3 overflow-hidden">
+                    <div className="bg-[#002856] h-3 rounded-full transition-all duration-1000 ease-out opacity-80 group-hover:opacity-100" style={{ width: `${porcentaje(count, total)}%` }}></div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // 3. DASHBOARD LISTADO (Protegido)
+  const renderDashboard = () => {
+    if (!sessionActive) return null;
+
+    const filtradas = quejas.filter(q => {
+      const matchSearch = q.cliente?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          q.folio?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (q.nss || '').includes(searchTerm);
+      const matchEstatus = filterEstatus ? q.estatus === filterEstatus : true;
+      const matchTipificacion = filterTipificacion ? q.tipificacion === filterTipificacion : true;
+      const matchTienda = filterTienda ? q.tienda === filterTienda : true;
+      const matchEstado = filterEstado ? q.estado === filterEstado : true;
+      return matchSearch && matchEstatus && matchTipificacion && matchTienda && matchEstado;
+    });
+
+    const uniqueTipificaciones = [...new Set(quejas.map(q => q.tipificacion).filter(Boolean))].sort();
+    const uniqueTiendas = [...new Set(quejas.map(q => q.tienda).filter(Boolean))].sort();
+    const uniqueEstados = [...new Set(quejas.map(q => q.estado).filter(Boolean))].sort();
+
+    return (
+      <div className="animate-in fade-in duration-300">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+            <Database className="text-[#002856]" /> Base de Datos de Clientes
+          </h2>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="p-5 border-b border-gray-200 bg-gray-50/50 flex flex-col gap-4">
+            <div className="flex justify-between items-center">
+              <div className="relative w-96">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+                <input type="text" placeholder="Buscar por Folio, Cliente o NSS..." className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#002856] outline-none transition-shadow" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+              </div>
+              <div className="text-sm text-[#002856] font-bold bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 flex items-center gap-2">
+                <ShieldCheck size={16}/> Total de Quejas: {filtradas.length}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-500 mr-2"><Filter size={16} /> Filtros:</div>
+              <select value={filterEstatus} onChange={(e) => setFilterEstatus(e.target.value)} className="text-sm border border-gray-300 rounded-lg py-2 px-3 focus:ring-2 focus:ring-[#002856] outline-none">
+                <option value="">Todos los Estatus</option><option value="Pendiente">Pendiente</option><option value="En Revisión">En Revisión</option><option value="Resuelta">Resuelta</option>
+              </select>
+              <select value={filterTipificacion} onChange={(e) => setFilterTipificacion(e.target.value)} className="text-sm border border-gray-300 rounded-lg py-2 px-3 focus:ring-2 focus:ring-[#002856] outline-none max-w-[200px] truncate">
+                <option value="">Todas las Tipificaciones</option>{uniqueTipificaciones.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <select value={filterTienda} onChange={(e) => setFilterTienda(e.target.value)} className="text-sm border border-gray-300 rounded-lg py-2 px-3 focus:ring-2 focus:ring-[#002856] outline-none max-w-[150px] truncate">
+                <option value="">Todas las Tiendas</option>{uniqueTiendas.map(t => <option key={t} value={t}>Tda. {t}</option>)}
+              </select>
+              <select value={filterEstado} onChange={(e) => setFilterEstado(e.target.value)} className="text-sm border border-gray-300 rounded-lg py-2 px-3 focus:ring-2 focus:ring-[#002856] outline-none max-w-[150px] truncate">
+                <option value="">Todos los Estados</option>{uniqueEstados.map(e => <option key={e} value={e}>{e}</option>)}
+              </select>
+              {(filterEstatus || filterTipificacion || filterTienda || filterEstado) && (
+                <button onClick={() => { setFilterEstatus(''); setFilterTipificacion(''); setFilterTienda(''); setFilterEstado(''); }} className="text-sm text-red-500 hover:text-red-700 font-bold ml-auto flex items-center gap-1 transition-colors">
+                  <X size={14} /> Limpiar Filtros
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-white text-gray-500 text-xs uppercase tracking-widest border-b border-gray-100">
+                  <th className="p-5 font-bold">Folio</th>
+                  <th className="p-5 font-bold">Fecha</th>
+                  <th className="p-5 font-bold">Datos del Cliente</th>
+                  <th className="p-5 font-bold">Tipificación</th>
+                  <th className="p-5 font-bold">Estatus</th>
+                  <th className="p-5 font-bold">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {filtradas.length === 0 ? (
+                  <tr><td colSpan="6" className="p-12 text-center text-gray-400 font-medium">No se encontraron registros confidenciales.</td></tr>
+                ) : (
+                  filtradas.map(queja => (
+                    <tr key={queja.id} className="hover:bg-blue-50/30 transition-colors">
+                      <td className="p-5 font-bold text-[#002856]">{queja.folio}</td>
+                      <td className="p-5 text-gray-600 text-sm font-medium">{new Date(queja.fechaRegistro).toLocaleDateString('es-MX')}</td>
+                      <td className="p-5">
+                        <div className="font-bold text-gray-800">{queja.cliente}</div>
+                        <div className="text-xs text-gray-400 font-medium mt-0.5">NSS: {queja.nss || 'N/A'}</div>
+                      </td>
+                      <td className="p-5 text-gray-600 text-sm font-medium truncate max-w-xs">{queja.tipificacion}</td>
+                      <td className="p-5">
+                        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold ${ queja.estatus === 'Pendiente' ? 'bg-red-50 text-red-600' : queja.estatus === 'En Revisión' ? 'bg-yellow-50 text-yellow-600' : 'bg-green-50 text-green-600' }`}>
+                          {queja.estatus === 'Pendiente' && <AlertCircle size={14} />}
+                          {queja.estatus === 'En Revisión' && <Clock size={14} />}
+                          {queja.estatus === 'Resuelta' && <CheckCircle size={14} />}
+                          {queja.estatus}
+                        </span>
+                      </td>
+                      <td className="p-5">
+                        <button onClick={() => { setSelectedQueja(queja); setView('detalle'); }} className="text-[#002856] hover:text-blue-900 font-bold text-sm bg-blue-50 hover:bg-blue-100 px-4 py-2 rounded-lg transition-colors">
+                          Seguimiento
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // 4. DETALLE Y SEGUIMIENTO COMERCIAL
+  const renderDetalle = () => {
+    if (!selectedQueja || !sessionActive) return null;
+
+    const actualizarEstatus = async (nuevoEstatus) => {
+      try {
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'quejas', selectedQueja.id);
+        await updateDoc(docRef, { estatus: nuevoEstatus });
+        setSelectedQueja({...selectedQueja, estatus: nuevoEstatus});
+        
+        enviarActualizacionASheets('actualizar', selectedQueja.folio, { estatus: nuevoEstatus });
+        mostrarToast(`Estatus actualizado a ${nuevoEstatus}`);
+      } catch (e) { mostrarToast("Error al actualizar", "error"); }
+    };
+
+    const guardarSeguimiento = async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const actualizacion = {
+        fechaCompromiso: formData.get('fechaCompromiso'),
+        fechaContestacion: formData.get('fechaContestacion'),
+        contestoFormulario: formData.get('contestoFormulario'),
+        accionesCorrectivas: formData.get('accionesCorrectivas'),
+        evidenciaLink: formData.get('evidenciaLink')
+      };
+      
+      try {
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'quejas', selectedQueja.id);
+        await updateDoc(docRef, actualizacion);
+        setSelectedQueja({...selectedQueja, ...actualizacion});
+        
+        enviarActualizacionASheets('actualizar', selectedQueja.folio, actualizacion);
+        mostrarToast("Información de seguimiento guardada y sincronizada.");
+      } catch (e) { mostrarToast("Error al guardar", "error"); }
+    };
+
+    return (
+      <div className="max-w-6xl mx-auto animate-in fade-in mb-10">
+        <div className="flex justify-between items-center mb-6">
+          <button onClick={() => { setView('dashboard'); setSelectedQueja(null); }} className="text-gray-500 hover:text-gray-900 flex items-center gap-2 font-bold transition-colors">
+            <ArrowLeft size={18} /> Volver al listado
+          </button>
+          <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl shadow-sm border border-gray-100">
+            <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Estatus Actual:</span>
+            <select value={selectedQueja.estatus} onChange={(e) => actualizarEstatus(e.target.value)} className="bg-transparent font-bold text-[#002856] focus:ring-0 outline-none cursor-pointer">
+              <option value="Pendiente">Pendiente</option><option value="En Revisión">En Revisión</option><option value="Resuelta">Resuelta</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-1 space-y-4">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest border-b border-gray-50 pb-3 mb-4">Datos Generales</h3>
+              <div className="space-y-4">
+                <div><div className="text-xs text-gray-400 font-medium">Folio</div><div className="font-black text-gray-800 text-xl">{selectedQueja.folio}</div></div>
+                <div><div className="text-xs text-gray-400 font-medium">Fecha Apertura</div><div className="text-sm font-bold text-gray-700">{new Date(selectedQueja.fechaRegistro).toLocaleDateString('es-MX')}</div></div>
+                <div><div className="text-xs text-gray-400 font-medium">Tipificación</div><div className="text-sm font-bold text-[#002856] bg-blue-50 px-3 py-1.5 rounded-lg mt-1 inline-block">{selectedQueja.tipificacion}</div></div>
+              </div>
+            </div>
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest border-b border-gray-50 pb-3 mb-4">Datos del Cliente</h3>
+              <div className="space-y-4">
+                <div><span className="text-gray-400 font-medium block text-xs">Nombre</span><span className="font-bold text-gray-800">{selectedQueja.cliente}</span></div>
+                <div><span className="text-gray-400 font-medium block text-xs">NSS / CURP</span><span className="font-bold text-gray-700">{selectedQueja.nss || 'N/A'} <br/> {selectedQueja.curp || 'N/A'}</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:col-span-2">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="bg-gray-50/50 px-6 py-5 border-b border-gray-100 flex items-center gap-3">
+                <FileText className="text-[#002856]" size={22} />
+                <h3 className="text-lg font-bold text-gray-800 tracking-tight">Campos Manuales de Seguimiento</h3>
+              </div>
+              <form onSubmit={guardarSeguimiento} className="p-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Fecha compromiso</label>
+                    <input type="date" name="fechaCompromiso" defaultValue={selectedQueja.fechaCompromiso || ''} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-[#002856] focus:bg-white transition-colors outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Fecha de contestación</label>
+                    <input type="date" name="fechaContestacion" defaultValue={selectedQueja.fechaContestacion || ''} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-[#002856] focus:bg-white transition-colors outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">¿Contestó formulario?</label>
+                    <select name="contestoFormulario" defaultValue={selectedQueja.contestoFormulario || 'No'} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-[#002856] focus:bg-white transition-colors outline-none">
+                      <option value="No">No</option><option value="Sí">Sí</option><option value="En Proceso">En Proceso</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Evidencia (LINK)</label>
+                    <input type="url" name="evidenciaLink" placeholder="https://..." defaultValue={selectedQueja.evidenciaLink || ''} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-[#002856] focus:bg-white transition-colors outline-none" />
+                  </div>
+                </div>
+                <div className="mb-6">
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Acciones Correctivas / Hechos</label>
+                  <textarea name="accionesCorrectivas" defaultValue={selectedQueja.accionesCorrectivas || ''} rows="5" className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-[#002856] focus:bg-white transition-colors outline-none resize-none"></textarea>
+                </div>
+                <div className="flex justify-end pt-2 border-t border-gray-50">
+                  <button type="submit" className="px-6 py-3 bg-[#002856] hover:bg-[#001f44] text-white rounded-xl flex items-center gap-2 font-bold shadow-md hover:shadow-lg transition-all">
+                    <Save size={18} /> Guardar Cambios
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // --- Render Principal ---
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] font-sans selection:bg-[#002856] selection:text-white">
+      {toast && (
+        <div className="fixed top-6 right-6 z-50 animate-in slide-in-from-top-4 fade-in duration-300">
+          <div className={`px-6 py-4 rounded-2xl shadow-xl flex items-center gap-3 text-white font-bold ${toast.tipo === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>
+            {toast.tipo === 'error' ? <AlertCircle size={20} /> : <CheckCircle size={20} className="text-green-400" />}
+            {toast.mensaje}
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="bg-white border-b border-gray-100 shadow-sm sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView('analitica')}>
+            <div className="w-12 h-12 relative flex items-center justify-center">
+              <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-4 h-4 bg-[#FFD100] rounded-full shadow-sm"></div>
+              <div className="absolute bottom-1.5 left-1.5 w-4 h-4 bg-[#FFD100] rounded-full shadow-sm"></div>
+              <div className="absolute bottom-1.5 right-1.5 w-4 h-4 bg-[#FFD100] rounded-full shadow-sm"></div>
+            </div>
+            <div>
+              <h1 className="font-extrabold text-2xl text-[#002856] leading-none tracking-tight">AforeCoppel</h1>
+              <span className="text-xs text-gray-400 font-bold tracking-widest uppercase">Portal de Quejas</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {!sessionActive ? (
+              <button onClick={() => setView('login')} className={`px-5 py-2.5 rounded-xl font-bold transition-all text-sm ${view === 'login' ? 'bg-gray-100 text-gray-400 cursor-default' : 'bg-blue-50 text-[#002856] hover:bg-blue-100'}`}>
+                Iniciar Sesión
+              </button>
+            ) : (
+              <div className="flex items-center gap-6">
+                <div className="text-sm text-right hidden md:block">
+                  <div className="font-bold text-gray-800">{user?.email || 'Modo Invitado'}</div>
+                  <div className="text-xs text-green-500 font-bold flex items-center justify-end gap-1.5 mt-0.5">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    </span>
+                    Sesión Segura
+                  </div>
+                </div>
+                <button onClick={handleLogout} className="w-10 h-10 bg-gray-50 hover:bg-red-50 rounded-xl flex items-center justify-center text-gray-400 hover:text-red-500 transition-colors" title="Cerrar Sesión">
+                  <LogOut size={18} strokeWidth={2.5} />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-6 py-10">
+        {view !== 'detalle' && view !== 'login' && (
+          <div className="flex items-center gap-8 mb-10 border-b border-gray-200">
+            <button 
+              onClick={() => setView('analitica')} 
+              className={`pb-4 px-2 font-bold text-sm transition-all border-b-[3px] flex items-center gap-2 ${view === 'analitica' ? 'border-[#002856] text-[#002856]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
+            >
+              <PieChart size={18} /> Vista Previa
+            </button>
+
+            <button 
+              onClick={() => sessionActive ? setView('dashboard') : setView('login')} 
+              className={`pb-4 px-2 font-bold text-sm transition-all border-b-[3px] flex items-center gap-2 ${view === 'dashboard' ? 'border-[#002856] text-[#002856]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
+            >
+              {sessionActive ? <Database size={18} /> : <Lock size={16} className="text-gray-300" />}
+              {sessionActive ? 'Listado de Quejas' : 'Acceso al Listado'}
+            </button>
+          </div>
+        )}
+
+        {view === 'analitica' && renderAnalitica()}
+        {view === 'login' && renderLogin()}
+        {view === 'dashboard' && renderDashboard()}
+        {view === 'detalle' && renderDetalle()}
+      </main>
+    </div>
+  );
+}
